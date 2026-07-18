@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Alfredo Tradutor</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+  <body>
+    <div class="app">
+      <header class="hero">
+        <p class="brand">Alfredo</p>
+        <h1>Tradutor</h1>
+        <p class="tagline">Fala para fala em tempo real — duas linhas isoladas</p>
+        <div class="status-bar" id="status-bar">
+          <span class="dot" id="engine-dot"></span>
+          <span id="engine-label">Conectando ao motor…</span>
+        </div>
+      </header>
+
+      <section class="howto">
+        <h2>Como escolher os áudios</h2>
+        <ol>
+          <li>
+            <strong>Ouvindo a outra pessoa (esquerda):</strong> entrada =
+            <em>Som do computador</em>; saída = <em>seus fones</em>.
+          </li>
+          <li>
+            <strong>Falando para a call (direita):</strong> entrada =
+            <em>seu microfone</em>; saída = onde a tradução deve sair
+            (depois: mic virtual).
+          </li>
+        </ol>
+        <button type="button" id="btn-suggest" class="primary ghost">
+          Usar dispositivos recomendados
+        </button>
+      </section>
+
+      <section class="controls">
+        <label class="field">
+          <span>Modo</span>
+          <select id="mode">
+            <option value="passthrough">Teste de áudio (passthrough)</option>
+            <option value="translate">Traduzir fala</option>
+          </select>
+        </label>
+        <label class="toggle advanced">
+          <input type="checkbox" id="show-technical" />
+          Mostrar dispositivos técnicos
+        </label>
+      </section>
+
+      <section class="lines">
+        <article class="line" data-line="a">
+          <header>
+            <h2>Ouvindo a outra pessoa</h2>
+            <label class="toggle">
+              <input type="checkbox" id="a-enabled" checked />
+              Ativa
+            </label>
+          </header>
+          <p class="hint" id="a-guide">
+            Capture o áudio da call (som do PC) e ouça a tradução nos fones.
+          </p>
+          <label class="field">
+            <span>Capturar de</span>
+            <select id="a-input"></select>
+          </label>
+          <p class="pick-hint" id="a-input-hint"></p>
+          <label class="field">
+            <span>Ouvir em</span>
+            <select id="a-output"></select>
+          </label>
+          <p class="pick-hint" id="a-output-hint"></p>
+          <div class="langs">
+            <label class="field">
+              <span>Idioma dela</span>
+              <select id="a-from">
+                <option value="en">Inglês</option>
+                <option value="pt">Português</option>
+                <option value="es">Espanhol</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Você ouve em</span>
+              <select id="a-to">
+                <option value="pt">Português</option>
+                <option value="en">Inglês</option>
+                <option value="es">Espanhol</option>
+              </select>
+            </label>
+          </div>
+          <div class="meter"><div id="a-level"></div></div>
+          <p class="line-status" id="a-status">parado</p>
+        </article>
+
+        <article class="line" data-line="b">
+          <header>
+            <h2>Falando para a outra pessoa</h2>
+            <label class="toggle">
+              <input type="checkbox" id="b-enabled" checked />
+              Ativa
+            </label>
+          </header>
+          <p class="hint" id="b-guide">
+            Capture seu microfone e envie a fala traduzida pela saída.
+          </p>
+          <label class="field">
+            <span>Capturar de</span>
+            <select id="b-input"></select>
+          </label>
+          <p class="pick-hint" id="b-input-hint"></p>
+          <label class="field">
+            <span>Enviar para</span>
+            <select id="b-output"></select>
+          </label>
+          <p class="pick-hint" id="b-output-hint"></p>
+          <div class="langs">
+            <label class="field">
+              <span>Você fala</span>
+              <select id="b-from">
+                <option value="pt">Português</option>
+                <option value="en">Inglês</option>
+                <option value="es">Espanhol</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Ela ouve em</span>
+              <select id="b-to">
+                <option value="en">Inglês</option>
+                <option value="pt">Português</option>
+                <option value="es">Espanhol</option>
+              </select>
+            </label>
+          </div>
+          <div class="meter"><div id="b-level"></div></div>
+          <p class="line-status" id="b-status">parado</p>
+        </article>
+      </section>
+
+      <section class="actions">
+        <button type="button" id="btn-refresh">Atualizar lista</button>
+        <button type="button" id="btn-start" class="primary">Iniciar</button>
+        <button type="button" id="btn-stop" disabled>Parar</button>
+      </section>
+
+      <section class="captions">
+        <h2>Legendas</h2>
+        <div id="captions" class="captions-box"></div>
+      </section>
+
+      <p class="error" id="error" hidden></p>
+    </div>
+  </body>
+</html>

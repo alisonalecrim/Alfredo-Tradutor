@@ -1,0 +1,29 @@
+# Ambiente / build
+engine/.venv/
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+*.egg-info/
+.Python
+dist/
+build/
+
+# Node / Tauri (apps/desktop já tem .gitignore; reforço na raiz)
+apps/desktop/node_modules/
+apps/desktop/dist/
+apps/desktop/src-tauri/target/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Modelos locais (futuro — não versionar pesos grandes)
+engine/models/
+*.onnx
+*.gguf
+*.bin
+!**/package-lock.json
