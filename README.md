@@ -1,6 +1,6 @@
 # Alfredo - Tradutor
 
-Tradutor de fala em tempo real para Linux: **Tauri (Rust)** + **motor Python**.
+Tradutor de fala em tempo real para Linux: **Tauri (Rust)** + **motor Python** - Ainda em construção.
 
 ## Estrutura
 
