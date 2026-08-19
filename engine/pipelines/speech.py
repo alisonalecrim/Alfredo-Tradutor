@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import platform
 import shutil
 import subprocess
 import tempfile
@@ -92,8 +93,6 @@ class SpeechPipeline:
             return SpeechResult("", "", None, sample_rate, stt_ms=stt_ms)
 
         confidence = _estimate_confidence(segments)
-        # Filtro conservador: evita traduzir alucinações muito evidentes sem
-        # descartar fala normal em ambientes ruidosos.
         if confidence is not None and confidence < 0.12:
             return SpeechResult("", "", None, sample_rate, stt_ms=stt_ms, confidence=confidence)
 
@@ -126,8 +125,6 @@ def _estimate_confidence(segments: list[object]) -> float | None:
         no_speech_prob = getattr(segment, "no_speech_prob", None)
         if avg_logprob is None:
             continue
-        # Converte log-probabilidade em uma escala útil de 0..1 e penaliza
-        # segmentos que o modelo considera provável silêncio.
         score = float(np.exp(max(-5.0, min(0.0, float(avg_logprob)))))
         if no_speech_prob is not None:
             score *= max(0.0, 1.0 - float(no_speech_prob))
@@ -155,9 +152,15 @@ def translate_text(text: str, source: str, target: str) -> str:
 
 
 def synthesize(text: str, lang: str) -> tuple[np.ndarray | None, int]:
-    """TTS via espeak-ng (CPU, sem custo)."""
+    """TTS local: Windows Speech/SAPI no Windows; espeak-ng nas demais plataformas."""
     if not text.strip():
         return None, 22050
+
+    if platform.system().lower() == "windows":
+        audio = _synthesize_windows(text, lang)
+        if audio is not None:
+            return audio
+
     espeak = shutil.which("espeak-ng") or shutil.which("espeak")
     if not espeak:
         return None, 22050
@@ -182,6 +185,71 @@ def synthesize(text: str, lang: str) -> tuple[np.ndarray | None, int]:
         return _read_wav(wav_path)
 
 
+def _synthesize_windows(text: str, lang: str) -> tuple[np.ndarray, int] | None:
+    """Gera WAV pelo sintetizador nativo do Windows via Windows PowerShell.
+
+    Tenta selecionar uma voz instalada cuja cultura corresponda ao idioma alvo;
+    se não houver, usa a voz padrão do Windows.
+    """
+    powershell = shutil.which("powershell.exe") or shutil.which("powershell")
+    if not powershell:
+        return None
+
+    cultures = {
+        "pt": "pt-BR",
+        "en": "en-US",
+        "es": "es-ES",
+        "fr": "fr-FR",
+    }
+    culture = cultures.get(lang, "en-US")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        wav_path = Path(tmp) / "out.wav"
+        txt_path = Path(tmp) / "speech.txt"
+        txt_path.write_text(text, encoding="utf-8")
+
+        # Caminhos/texto entram como argumentos, evitando interpolar a fala no script.
+        script = (
+            "param([string]$Out,[string]$TextFile,[string]$Culture)\n"
+            "Add-Type -AssemblyName System.Speech\n"
+            "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer\n"
+            "$voice = $s.GetInstalledVoices() | Where-Object { "
+            "  $_.VoiceInfo.Culture.Name -eq $Culture "
+            "} | Select-Object -First 1\n"
+            "if ($voice) { $s.SelectVoice($voice.VoiceInfo.Name) }\n"
+            "$s.Rate = 1\n"
+            "$s.SetOutputToWaveFile($Out)\n"
+            "$text = [System.IO.File]::ReadAllText($TextFile, [System.Text.Encoding]::UTF8)\n"
+            "$s.Speak($text)\n"
+            "$s.Dispose()\n"
+        )
+
+        try:
+            subprocess.run(
+                [
+                    powershell,
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    script,
+                    str(wav_path),
+                    str(txt_path),
+                    culture,
+                ],
+                check=True,
+                capture_output=True,
+                timeout=20,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+            return None
+
+        if not wav_path.exists() or wav_path.stat().st_size <= 44:
+            return None
+        return _read_wav(wav_path)
+
+
 def _read_wav(path: Path) -> tuple[np.ndarray, int]:
     import wave
 
@@ -193,10 +261,14 @@ def _read_wav(path: Path) -> tuple[np.ndarray, int]:
 
     if width == 2:
         data = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
-    else:
+    elif width == 1:
         data = np.frombuffer(frames, dtype=np.uint8).astype(np.float32)
         data = (data - 128.0) / 128.0
+    elif width == 4:
+        data = np.frombuffer(frames, dtype=np.int32).astype(np.float32) / 2147483648.0
+    else:
+        raise RuntimeError(f"Formato WAV não suportado: {width * 8} bits")
 
     if channels > 1:
         data = data.reshape(-1, channels).mean(axis=1)
-    return data, rate
+    return data.astype(np.float32, copy=False), rate
