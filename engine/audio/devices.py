@@ -25,13 +25,33 @@ def is_windows_loopback_device(index: int | None) -> bool:
     return bool(_is_windows() and index is not None and index >= WINDOWS_LOOPBACK_BASE)
 
 
-def _windows_loopbacks() -> list[dict[str, Any]]:
-    """Retorna endpoints WASAPI loopback usando SoundCard.
+def _virtual_mic_pair(name: str) -> str | None:
+    """Retorna o endpoint de gravação esperado para um cabo virtual conhecido.
 
-    SoundCard expõe saídas do Windows como microfones virtuais quando
-    include_loopback=True. Usamos índices sintéticos para manter compatibilidade
-    com o contrato atual da UI/API, que trabalha com índices inteiros.
+    O Alfredo escreve no endpoint de reprodução (por exemplo, CABLE Input) e a
+    aplicação de chamada deve selecionar o endpoint de gravação pareado
+    (por exemplo, CABLE Output) como microfone.
     """
+    n = name.lower()
+    if "cable input" in n and "vb-audio" in n:
+        return "CABLE Output (VB-Audio Virtual Cable)"
+    if "cable-a input" in n:
+        return "CABLE-A Output"
+    if "cable-b input" in n:
+        return "CABLE-B Output"
+    if "voicemeeter aux input" in n:
+        return "Voicemeeter AUX Output"
+    if "voicemeeter vaio3 input" in n:
+        return "Voicemeeter VAIO3 Output"
+    if "voicemeeter input" in n:
+        return "Voicemeeter Output"
+    if "virtual cable" in n and "input" in n:
+        return "saída de gravação pareada do cabo virtual"
+    return None
+
+
+def _windows_loopbacks() -> list[dict[str, Any]]:
+    """Retorna endpoints WASAPI loopback usando SoundCard."""
     if not _is_windows():
         return []
 
@@ -71,6 +91,7 @@ def _windows_loopbacks() -> list[dict[str, Any]]:
                     "hostapi": -1,
                     "hostapi_name": "Windows WASAPI loopback",
                     "backend": "soundcard_loopback",
+                    "virtual_mic_pair": None,
                 }
             )
         return result
@@ -112,7 +133,8 @@ def list_audio_devices() -> dict[str, Any]:
             host = host_names.get(hostapi, "")
             max_in = int(d.get("max_input_channels") or 0)
             max_out = int(d.get("max_output_channels") or 0)
-            kind = _classify(name, max_in, max_out, host)
+            pair = _virtual_mic_pair(name) if max_out > 0 else None
+            kind = "virtual_mic_sink" if pair else _classify(name, max_in, max_out, host)
             technical = _is_technical(name, host)
             devices.append(
                 {
@@ -129,10 +151,10 @@ def list_audio_devices() -> dict[str, Any]:
                     "hostapi": hostapi,
                     "hostapi_name": host,
                     "backend": "sounddevice",
+                    "virtual_mic_pair": pair,
                 }
             )
 
-        # No Windows adiciona endpoints de reprodução como fontes WASAPI loopback.
         devices.extend(_windows_loopbacks())
 
         default_in, default_out = sd.default.device
@@ -156,23 +178,45 @@ def list_audio_devices() -> dict[str, Any]:
             default_output,
         )
 
+        virtual_sinks = [d for d in outputs_simple if d["kind"] == "virtual_mic_sink"]
+        virtual_mic_ready = bool(virtual_sinks)
+        virtual_mic_pair = virtual_sinks[0].get("virtual_mic_pair") if virtual_sinks else None
+
         system = platform.system()
         if _is_windows():
             guide_a = (
                 "Linha A = o que a outra pessoa fala. "
                 "Escolha 'Som do computador' (WASAPI loopback) e ouça nos seus fones."
             )
-            platform_hint = "Windows: captura do sistema via WASAPI loopback."
+            if virtual_mic_ready:
+                guide_b = (
+                    "Linha B = você falando. O Alfredo detectou um cabo virtual: "
+                    "envie a tradução para ele e, no Teams/Meet/Zoom, escolha "
+                    f"'{virtual_mic_pair}' como microfone."
+                )
+                platform_hint = "Windows: WASAPI loopback + microfone virtual detectado."
+            else:
+                guide_b = (
+                    "Linha B = você falando. Para enviar a tradução à chamada, instale "
+                    "VB-CABLE/VoiceMeeter e selecione o endpoint virtual de entrada como saída."
+                )
+                platform_hint = "Windows: WASAPI loopback ativo; microfone virtual não detectado."
         else:
             guide_a = (
                 "Linha A = o que a outra pessoa fala. "
                 "Capture o som do computador (monitor) e ouça nos seus fones."
+            )
+            guide_b = (
+                "Linha B = você falando. Capture seu microfone e envie a tradução "
+                "para a saída virtual escolhida."
             )
             platform_hint = "Linux: captura do sistema via PipeWire/Pulse/ALSA."
 
         return {
             "platform": system,
             "platform_hint": platform_hint,
+            "virtual_mic_ready": virtual_mic_ready,
+            "virtual_mic_pair": virtual_mic_pair,
             "default_input": default_input,
             "default_output": default_output,
             "hostapis": [{"index": i, "name": n} for i, n in host_names.items()],
@@ -184,16 +228,15 @@ def list_audio_devices() -> dict[str, Any]:
             "suggestions": suggestions,
             "guide": {
                 "line_a": guide_a,
-                "line_b": (
-                    "Linha B = o que você fala. Capture seu microfone e envie a tradução "
-                    "para a saída escolhida; depois, use um microfone virtual da call."
-                ),
+                "line_b": guide_b,
             },
         }
     except Exception as exc:  # noqa: BLE001
         return {
             "error": str(exc),
             "platform": platform.system(),
+            "virtual_mic_ready": False,
+            "virtual_mic_pair": None,
             "default_input": None,
             "default_output": None,
             "hostapis": [],
@@ -231,6 +274,7 @@ def _kind_label(kind: str) -> str:
     return {
         "microphone": "Microfone",
         "system_loopback": "Som do sistema",
+        "virtual_mic_sink": "Microfone virtual da call",
         "speakers": "Alto-falantes",
         "headphones": "Fones",
         "hdmi": "HDMI / TV",
@@ -253,6 +297,8 @@ def _friendly_label(name: str, kind: str) -> str:
 
     if kind == "system_loopback":
         return f"Som do computador — {n}"
+    if kind == "virtual_mic_sink":
+        return f"Enviar para a call — {n}"
     if kind == "microphone":
         return f"Microfone — {n}"
     if kind == "speakers":
@@ -271,14 +317,15 @@ def _recommended_roles(kind: str) -> list[str]:
         return ["a_input"]
     if kind == "microphone":
         return ["b_input"]
+    if kind == "virtual_mic_sink":
+        return ["b_output"]
     if kind in {"speakers", "headphones", "duplex_default"}:
-        return ["a_output", "b_output"]
+        return ["a_output"]
     return []
 
 
 def _is_technical(name: str, host: str) -> bool:
     if _is_windows():
-        # No Windows, prefira WASAPI e esconda endpoints legados/duplicados.
         h = host.lower()
         if any(x in h for x in ("mme", "directsound", "wdm-ks")):
             return True
@@ -318,8 +365,13 @@ def _build_suggestions(
     b_in = _pick(inputs, ("microphone",), default_input)
     if a_in is None:
         a_in = _pick(inputs, ("duplex_default", "microphone"), default_input)
+
+    # A deve tocar somente para o usuário. B prioriza o cabo que a call verá
+    # como microfone, evitando mandar a voz traduzida para os alto-falantes.
     a_out = _pick(outputs, ("headphones", "speakers", "duplex_default"), default_output)
-    b_out = _pick(outputs, ("speakers", "headphones", "duplex_default"), default_output)
+    b_out = _pick(outputs, ("virtual_mic_sink",), None)
+    if b_out is None:
+        b_out = _pick(outputs, ("speakers", "headphones", "duplex_default"), default_output)
 
     return {
         "line_a": {
@@ -330,6 +382,6 @@ def _build_suggestions(
         "line_b": {
             "input_device": b_in,
             "output_device": b_out,
-            "summary": "Captura seu microfone e envia o áudio traduzido pela saída escolhida.",
+            "summary": "Captura seu microfone e envia a tradução para o microfone virtual da call.",
         },
     }
