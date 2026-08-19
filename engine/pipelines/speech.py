@@ -1,13 +1,41 @@
-"""Pipeline fala → texto → tradução → fala (CPU)."""
+"""Pipeline fala → texto → tradução → fala (CPU), otimizado para baixa latência."""
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
+
+
+@lru_cache(maxsize=1)
+def _shared_whisper():
+    """Carrega uma única instância do Whisper para todas as linhas.
+
+    Evita duplicar memória/modelo quando A e B estão ativos ao mesmo tempo.
+    O CTranslate2 pode atender mais de uma requisição com num_workers > 1.
+    """
+    from faster_whisper import WhisperModel
+
+    cpu_threads = max(1, min(4, os.cpu_count() or 1))
+    return WhisperModel(
+        "base",
+        device="cpu",
+        compute_type="int8",
+        cpu_threads=cpu_threads,
+        num_workers=2,
+    )
+
+
+@lru_cache(maxsize=16)
+def _translator(source: str, target: str):
+    from deep_translator import GoogleTranslator
+
+    return GoogleTranslator(source=source, target=target)
 
 
 class SpeechPipeline:
@@ -18,10 +46,7 @@ class SpeechPipeline:
         self._ready = False
 
     def load(self) -> None:
-        from faster_whisper import WhisperModel
-
-        # CPU int8 — adequado a notebook sem GPU
-        self._whisper = WhisperModel("base", device="cpu", compute_type="int8")
+        self._whisper = _shared_whisper()
         self._ready = True
 
     def process(
@@ -30,11 +55,19 @@ class SpeechPipeline:
         if not self._ready or self._whisper is None:
             raise RuntimeError("Pipeline não carregado")
 
+        if audio.size == 0:
+            return "", "", None, sample_rate
+
+        # O LineWorker já faz endpointing/VAD leve. Aqui priorizamos velocidade.
         segments, _info = self._whisper.transcribe(
             audio,
             language=_whisper_lang(self.source_lang),
-            vad_filter=True,
+            vad_filter=False,
             beam_size=1,
+            best_of=1,
+            temperature=0.0,
+            condition_on_previous_text=False,
+            without_timestamps=True,
         )
         text = " ".join(s.text.strip() for s in segments).strip()
         if not text:
@@ -50,14 +83,13 @@ def _whisper_lang(code: str) -> str:
 
 
 def translate_text(text: str, source: str, target: str) -> str:
-    """Tradução via deep-translator (sem instalar PyTorch)."""
+    """Tradução via deep-translator com instância reutilizada por par de idiomas."""
     if source == target:
         return text
     try:
-        from deep_translator import GoogleTranslator
-
-        return GoogleTranslator(source=source, target=target).translate(text)
+        return _translator(source, target).translate(text)
     except Exception:
+        # Mantém o áudio funcional mesmo se o serviço de tradução falhar.
         return text
 
 
@@ -85,7 +117,7 @@ def synthesize(text: str, lang: str) -> tuple[np.ndarray | None, int]:
                     "-v",
                     voice,
                     "-s",
-                    "160",
+                    "175",
                     "-w",
                     str(wav_path),
                     text,
