@@ -144,17 +144,26 @@ class LineWorker:
 
     def _run(self) -> None:
         import sounddevice as sd
+        from engine.audio.devices import is_windows_loopback_device
 
         try:
             self._set(status="starting", error=None)
             in_dev = self.config.input_device
             out_dev = self.config.output_device
-            info = sd.query_devices(in_dev)
-            rate = int(info.get("default_samplerate") or 48000)
-            self._sample_rate = 16000 if self.mode == "translate" else rate
+
+            if is_windows_loopback_device(in_dev):
+                # SoundCard/WASAPI fará conversão para a taxa pedida.
+                self._sample_rate = 16000 if self.mode == "translate" else 48000
+            else:
+                info = sd.query_devices(in_dev)
+                rate = int(info.get("default_samplerate") or 48000)
+                self._sample_rate = 16000 if self.mode == "translate" else rate
 
             if self.mode == "passthrough":
-                self._run_passthrough(sd, in_dev, out_dev)
+                if is_windows_loopback_device(in_dev):
+                    self._run_windows_loopback_passthrough(sd, int(in_dev), out_dev)
+                else:
+                    self._run_passthrough(sd, in_dev, out_dev)
             else:
                 self._run_translate(sd, in_dev, out_dev)
         except Exception as exc:  # noqa: BLE001
@@ -183,7 +192,62 @@ class LineWorker:
 
         self._set(status="stopped", level=0.0)
 
+    def _run_windows_loopback_passthrough(
+        self, sd: Any, in_dev: int, out_dev: int | None
+    ) -> None:
+        from engine.audio.devices import get_windows_loopback_microphone
+
+        mic = get_windows_loopback_microphone(in_dev)
+        self._set(status="running")
+        with mic.recorder(samplerate=self._sample_rate, blocksize=2048) as recorder:
+            with sd.OutputStream(
+                device=out_dev,
+                samplerate=self._sample_rate,
+                channels=1,
+                dtype="float32",
+                blocksize=0,
+            ) as output:
+                while not self._stop.is_set():
+                    data = recorder.record(numframes=self._block)
+                    mono = self._to_mono(data)
+                    if mono.size == 0:
+                        continue
+                    rms = float(np.sqrt(np.mean(np.square(mono))) + 1e-12)
+                    self._level = min(1.0, rms * 8.0)
+                    output.write(mono.reshape(-1, 1))
+        self._set(status="stopped", level=0.0)
+
+    @staticmethod
+    def _to_mono(data: Any) -> np.ndarray:
+        arr = np.asarray(data, dtype=np.float32)
+        if arr.size == 0:
+            return np.zeros(0, dtype=np.float32)
+        if arr.ndim == 1:
+            return arr.reshape(-1)
+        # No WASAPI não pedimos canal único: algumas versões do backend têm
+        # problemas com captura mono. Fazemos o downmix depois da leitura.
+        return arr.mean(axis=1).astype(np.float32, copy=False)
+
+    def _windows_loopback_capture(self, in_dev: int) -> None:
+        from engine.audio.devices import get_windows_loopback_microphone
+
+        mic = get_windows_loopback_microphone(in_dev)
+        try:
+            with mic.recorder(samplerate=self._sample_rate, blocksize=2048) as recorder:
+                while not self._stop.is_set():
+                    data = recorder.record(numframes=self._block)
+                    mono = self._to_mono(data)
+                    if mono.size == 0:
+                        continue
+                    rms = float(np.sqrt(np.mean(np.square(mono))) + 1e-12)
+                    self._level = min(1.0, rms * 8.0)
+                    self._put_latest(self._audio_q, mono, "audio")
+        except Exception as exc:  # noqa: BLE001
+            self._set(error=f"WASAPI loopback: {exc}")
+            self._stop.set()
+
     def _run_translate(self, sd: Any, in_dev: int | None, out_dev: int | None) -> None:
+        from engine.audio.devices import is_windows_loopback_device
         from engine.pipelines.speech import SpeechPipeline
 
         pipeline = SpeechPipeline(self.config.source_lang, self.config.target_lang)
@@ -206,6 +270,39 @@ class LineWorker:
         processor.start()
         player.start()
 
+        if is_windows_loopback_device(in_dev):
+            capture = threading.Thread(
+                target=self._windows_loopback_capture,
+                args=(int(in_dev),),
+                name=f"alfredo-wasapi-{self.config.label}",
+                daemon=True,
+            )
+            capture.start()
+            self._endpoint_loop()
+            capture.join(timeout=2.0)
+        else:
+            def callback(indata, frames, time_info, status):  # noqa: ANN001
+                mono = indata[:, 0].copy() if indata.ndim > 1 else indata.copy().reshape(-1)
+                rms = float(np.sqrt(np.mean(np.square(mono))) + 1e-12)
+                self._level = min(1.0, rms * 8.0)
+                self._put_latest(self._audio_q, mono, "audio")
+
+            with sd.InputStream(
+                device=in_dev,
+                samplerate=self._sample_rate,
+                blocksize=self._block,
+                channels=1,
+                dtype="float32",
+                callback=callback,
+            ):
+                self._endpoint_loop()
+
+        self._stop.set()
+        processor.join(timeout=2.0)
+        player.join(timeout=2.0)
+        self._set(status="stopped", level=0.0)
+
+    def _endpoint_loop(self) -> None:
         pre_roll = deque(maxlen=4)
         utterance: list[np.ndarray] = []
         active = False
@@ -214,81 +311,61 @@ class LineWorker:
         total_samples = 0
         noise_floor = 0.003
 
-        # Silêncio curto encerra frases rápidas; o teto maior preserva contexto.
         min_speech = int(self._sample_rate * 0.28)
         end_silence = int(self._sample_rate * 0.32)
         max_utterance = int(self._sample_rate * 2.80)
 
-        def callback(indata, frames, time_info, status):  # noqa: ANN001
-            mono = indata[:, 0].copy() if indata.ndim > 1 else indata.copy().reshape(-1)
-            rms = float(np.sqrt(np.mean(np.square(mono))) + 1e-12)
-            self._level = min(1.0, rms * 8.0)
-            self._put_latest(self._audio_q, mono, "audio")
+        while not self._stop.is_set():
+            try:
+                part = self._audio_q.get(timeout=0.15)
+            except queue.Empty:
+                continue
 
-        with sd.InputStream(
-            device=in_dev,
-            samplerate=self._sample_rate,
-            blocksize=self._block,
-            channels=1,
-            dtype="float32",
-            callback=callback,
-        ):
-            while not self._stop.is_set():
-                try:
-                    part = self._audio_q.get(timeout=0.15)
-                except queue.Empty:
+            rms = float(np.sqrt(np.mean(np.square(part))) + 1e-12)
+            threshold = max(0.006, noise_floor * 2.8)
+            is_speech = rms >= threshold
+
+            if not active:
+                noise_floor = (noise_floor * 0.97) + (min(rms, 0.02) * 0.03)
+                pre_roll.append(part)
+                if not is_speech:
                     continue
-
-                rms = float(np.sqrt(np.mean(np.square(part))) + 1e-12)
-                threshold = max(0.006, noise_floor * 2.8)
-                is_speech = rms >= threshold
-
-                if not active:
-                    noise_floor = (noise_floor * 0.97) + (min(rms, 0.02) * 0.03)
-                    pre_roll.append(part)
-                    if not is_speech:
-                        continue
-                    active = True
-                    utterance = list(pre_roll)
-                    speech_samples = len(part)
-                    silence_samples = 0
-                    total_samples = sum(len(x) for x in utterance)
-                    pre_roll.clear()
-                    continue
-
-                utterance.append(part)
-                total_samples += len(part)
-                if is_speech:
-                    speech_samples += len(part)
-                    silence_samples = 0
-                else:
-                    silence_samples += len(part)
-
-                ended = silence_samples >= end_silence and speech_samples >= min_speech
-                forced = total_samples >= max_utterance
-                if not ended and not forced:
-                    continue
-
-                segment = np.concatenate(utterance)
-                if ended and silence_samples > 0 and segment.size > silence_samples:
-                    keep_tail = int(self._sample_rate * 0.06)
-                    trim = max(0, silence_samples - keep_tail)
-                    if trim:
-                        segment = segment[:-trim]
-
-                if segment.size >= min_speech:
-                    self._put_latest(self._segment_q, segment, "segment")
-
-                utterance = []
-                speech_samples = 0
+                active = True
+                utterance = list(pre_roll)
+                speech_samples = len(part)
                 silence_samples = 0
-                total_samples = 0
-                active = forced and is_speech
+                total_samples = sum(len(x) for x in utterance)
+                pre_roll.clear()
+                continue
 
-        self._stop.set()
-        processor.join(timeout=2.0)
-        player.join(timeout=2.0)
-        self._set(status="stopped", level=0.0)
+            utterance.append(part)
+            total_samples += len(part)
+            if is_speech:
+                speech_samples += len(part)
+                silence_samples = 0
+            else:
+                silence_samples += len(part)
+
+            ended = silence_samples >= end_silence and speech_samples >= min_speech
+            forced = total_samples >= max_utterance
+            if not ended and not forced:
+                continue
+
+            segment = np.concatenate(utterance)
+            if ended and silence_samples > 0 and segment.size > silence_samples:
+                keep_tail = int(self._sample_rate * 0.06)
+                trim = max(0, silence_samples - keep_tail)
+                if trim:
+                    segment = segment[:-trim]
+
+            if segment.size >= min_speech:
+                self._put_latest(self._segment_q, segment, "segment")
+
+            utterance = []
+            speech_samples = 0
+            silence_samples = 0
+            total_samples = 0
+            active = forced and is_speech
 
     def _processor_loop(self, pipeline: Any) -> None:
         from engine.pipelines.speech import TranslationError
@@ -302,7 +379,6 @@ class LineWorker:
             try:
                 result = pipeline.process(segment, self._sample_rate)
             except TranslationError as exc:
-                # Não reproduz o texto original com a voz do idioma de destino.
                 self._set(error=str(exc), last_translation="")
                 continue
             except Exception as exc:  # noqa: BLE001
