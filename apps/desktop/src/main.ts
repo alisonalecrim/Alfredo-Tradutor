@@ -79,7 +79,6 @@ function fillSelect(
     return;
   }
 
-  // Agrupa: recomendados primeiro
   const sorted = [...devices].sort((a, b) => {
     const ar = a.recommended_for?.includes(role) ? 0 : 1;
     const br = b.recommended_for?.includes(role) ? 0 : 1;
@@ -90,9 +89,7 @@ function fillSelect(
     const opt = document.createElement("option");
     opt.value = String(d.index);
     opt.textContent = deviceLabel(d, role);
-    if (d.recommended_for?.includes(role)) {
-      opt.dataset.recommended = "1";
-    }
+    if (d.recommended_for?.includes(role)) opt.dataset.recommended = "1";
     el.appendChild(opt);
   }
 
@@ -101,7 +98,6 @@ function fillSelect(
   } else if (previous && devices.some((d) => String(d.index) === previous)) {
     el.value = previous;
   }
-
   updatePickHint(el.id);
 }
 
@@ -122,13 +118,9 @@ function updatePickHint(selectId: string) {
 
   const el = $<HTMLSelectElement>(selectId);
   const idx = el.value === "" ? null : Number(el.value);
-  const pool =
-    selectId.endsWith("input")
-      ? lastDevices.inputs
-      : lastDevices.outputs;
+  const pool = selectId.endsWith("input") ? lastDevices.inputs : lastDevices.outputs;
   const d = findDevice(pool, idx);
   const hint = $(hintId);
-
   if (!d) {
     hint.textContent = "";
     return;
@@ -148,65 +140,27 @@ function updatePickHint(selectId: string) {
 function applySuggestions() {
   if (!lastDevices?.suggestions) return;
   const s = lastDevices.suggestions;
-  if (s.line_a?.input_device != null) {
-    $<HTMLSelectElement>("a-input").value = String(s.line_a.input_device);
-  }
-  if (s.line_a?.output_device != null) {
-    $<HTMLSelectElement>("a-output").value = String(s.line_a.output_device);
-  }
-  if (s.line_b?.input_device != null) {
-    $<HTMLSelectElement>("b-input").value = String(s.line_b.input_device);
-  }
-  if (s.line_b?.output_device != null) {
-    $<HTMLSelectElement>("b-output").value = String(s.line_b.output_device);
-  }
-  for (const id of ["a-input", "a-output", "b-input", "b-output"]) {
-    updatePickHint(id);
-  }
+  if (s.line_a?.input_device != null) $<HTMLSelectElement>("a-input").value = String(s.line_a.input_device);
+  if (s.line_a?.output_device != null) $<HTMLSelectElement>("a-output").value = String(s.line_a.output_device);
+  if (s.line_b?.input_device != null) $<HTMLSelectElement>("b-input").value = String(s.line_b.input_device);
+  if (s.line_b?.output_device != null) $<HTMLSelectElement>("b-output").value = String(s.line_b.output_device);
+  for (const id of ["a-input", "a-output", "b-input", "b-output"]) updatePickHint(id);
 }
 
 function populateFromCache() {
   if (!lastDevices) return;
   const showTech = $<HTMLInputElement>("show-technical").checked;
-  const inputs = showTech
-    ? lastDevices.inputs
-    : (lastDevices.inputs_simple ?? lastDevices.inputs);
-  const outputs = showTech
-    ? lastDevices.outputs
-    : (lastDevices.outputs_simple ?? lastDevices.outputs);
-
+  const inputs = showTech ? lastDevices.inputs : (lastDevices.inputs_simple ?? lastDevices.inputs);
+  const outputs = showTech ? lastDevices.outputs : (lastDevices.outputs_simple ?? lastDevices.outputs);
   const sug = lastDevices.suggestions;
-  fillSelect(
-    $<HTMLSelectElement>("a-input"),
-    inputs,
-    "a_input",
-    sug?.line_a?.input_device,
-  );
-  fillSelect(
-    $<HTMLSelectElement>("a-output"),
-    outputs,
-    "a_output",
-    sug?.line_a?.output_device,
-  );
-  fillSelect(
-    $<HTMLSelectElement>("b-input"),
-    inputs,
-    "b_input",
-    sug?.line_b?.input_device,
-  );
-  fillSelect(
-    $<HTMLSelectElement>("b-output"),
-    outputs,
-    "b_output",
-    sug?.line_b?.output_device,
-  );
 
-  if (lastDevices.guide?.line_a) {
-    $("a-guide").textContent = lastDevices.guide.line_a;
-  }
-  if (lastDevices.guide?.line_b) {
-    $("b-guide").textContent = lastDevices.guide.line_b;
-  }
+  fillSelect($<HTMLSelectElement>("a-input"), inputs, "a_input", sug?.line_a?.input_device);
+  fillSelect($<HTMLSelectElement>("a-output"), outputs, "a_output", sug?.line_a?.output_device);
+  fillSelect($<HTMLSelectElement>("b-input"), inputs, "b_input", sug?.line_b?.input_device);
+  fillSelect($<HTMLSelectElement>("b-output"), outputs, "b_output", sug?.line_b?.output_device);
+
+  if (lastDevices.guide?.line_a) $("a-guide").textContent = lastDevices.guide.line_a;
+  if (lastDevices.guide?.line_b) $("b-guide").textContent = lastDevices.guide.line_b;
 }
 
 async function refreshDevices() {
@@ -220,11 +174,7 @@ async function checkHealth() {
   const dot = $("engine-dot");
   const label = $("engine-label");
   try {
-    const h = await engine<{
-      status: string;
-      session_running: boolean;
-      mode?: string | null;
-    }>("GET", "/health");
+    const h = await engine<{ status: string; session_running: boolean; mode?: string | null }>("GET", "/health");
     dot.className = "dot ok";
     label.textContent = h.session_running
       ? `Motor OK · sessão ativa (${h.mode ?? "?"})`
@@ -232,8 +182,7 @@ async function checkHealth() {
     return true;
   } catch (e) {
     dot.className = "dot err";
-    label.textContent =
-      "Motor offline — rode: bash scripts/run-engine.sh";
+    label.textContent = "Motor offline — rode: bash scripts/run-engine.sh";
     console.error(e);
     return false;
   }
@@ -264,6 +213,25 @@ function showError(msg: string | null) {
   el.textContent = msg;
 }
 
+function lineStatusText(line: Record<string, unknown>, fallback: string): string {
+  const error = String(line.error ?? "").trim();
+  if (error) return `ERRO · ${error}`;
+  const warning = String(line.warning ?? "").trim();
+  if (warning) return `ATENÇÃO · ${warning}`;
+
+  const status = String(line.status ?? fallback);
+  const total = Number(line.latency_ms ?? 0);
+  const stt = Number(line.stt_ms ?? 0);
+  const tr = Number(line.translation_ms ?? 0);
+  const tts = Number(line.tts_ms ?? 0);
+  const dropped = Number(line.dropped_segments ?? 0);
+  if (total > 0) {
+    const droppedText = dropped > 0 ? ` · perdas ${dropped}` : "";
+    return `${status} · ${total} ms (STT ${stt} / Trad ${tr} / TTS ${tts})${droppedText}`;
+  }
+  return status;
+}
+
 function applyStatus(s: StatusResponse) {
   const a = (s.line_a ?? {}) as Record<string, unknown>;
   const b = (s.line_b ?? {}) as Record<string, unknown>;
@@ -272,8 +240,8 @@ function applyStatus(s: StatusResponse) {
   const bLevel = Number(b.level ?? 0);
   $("a-level").style.width = `${Math.min(100, aLevel * 100)}%`;
   $("b-level").style.width = `${Math.min(100, bLevel * 100)}%`;
-  $("a-status").textContent = String(a.status ?? (s.running ? "…" : "parado"));
-  $("b-status").textContent = String(b.status ?? (s.running ? "…" : "parado"));
+  $("a-status").textContent = lineStatusText(a, s.running ? "…" : "parado");
+  $("b-status").textContent = lineStatusText(b, s.running ? "…" : "parado");
 
   const box = $("captions");
   const captions = s.captions ?? [];
@@ -288,14 +256,15 @@ function applyStatus(s: StatusResponse) {
 
   $("btn-start").toggleAttribute("disabled", s.running);
   $("btn-stop").toggleAttribute("disabled", !s.running);
+
+  const lineErrors = [a.error, b.error].filter(Boolean).map(String);
   if (s.error) showError(s.error);
+  else if (lineErrors.length) showError(lineErrors.join(" | "));
+  else showError(null);
 }
 
 function escapeHtml(s: string) {
-  return s
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
+  return s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
 async function startSession() {
