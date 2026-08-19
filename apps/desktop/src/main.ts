@@ -8,6 +8,7 @@ type Device = {
   kind_label?: string;
   technical?: boolean;
   recommended_for?: string[];
+  virtual_mic_pair?: string | null;
   max_input_channels: number;
   max_output_channels: number;
 };
@@ -27,6 +28,10 @@ type Suggestions = {
 
 type DevicesResponse = {
   error?: string;
+  platform?: string;
+  platform_hint?: string;
+  virtual_mic_ready?: boolean;
+  virtual_mic_pair?: string | null;
   default_input?: number | null;
   default_output?: number | null;
   inputs: Device[];
@@ -126,6 +131,14 @@ function updatePickHint(selectId: string) {
     return;
   }
 
+  if (d.kind === "virtual_mic_sink") {
+    const pair = d.virtual_mic_pair || lastDevices.virtual_mic_pair;
+    hint.textContent = pair
+      ? `Certo para a call. No Teams/Meet/Zoom selecione "${pair}" como microfone.`
+      : "Certo para enviar a voz traduzida a um microfone virtual da call.";
+    return;
+  }
+
   const tips: Record<string, string> = {
     system_loopback: "Certo para pegar o áudio do Meet/Zoom/navegador.",
     microphone: "Certo para a sua voz.",
@@ -182,7 +195,7 @@ async function checkHealth() {
     return true;
   } catch (e) {
     dot.className = "dot err";
-    label.textContent = "Motor offline — rode: bash scripts/run-engine.sh";
+    label.textContent = "Motor offline — inicie o engine pelo script da sua plataforma";
     console.error(e);
     return false;
   }
