@@ -151,13 +151,14 @@ class LineWorker:
             in_dev = self.config.input_device
             out_dev = self.config.output_device
 
+            # Captura sempre na taxa nativa do device. Forçar 16 kHz no
+            # PortAudio/WASAPI do Windows causa PaErrorCode -9997.
+            # O Whisper recebe áudio reamostrado no processador.
             if is_windows_loopback_device(in_dev):
-                # SoundCard/WASAPI fará conversão para a taxa pedida.
-                self._sample_rate = 16000 if self.mode == "translate" else 48000
+                self._sample_rate = 48000
             else:
                 info = sd.query_devices(in_dev)
-                rate = int(info.get("default_samplerate") or 48000)
-                self._sample_rate = 16000 if self.mode == "translate" else rate
+                self._sample_rate = int(info.get("default_samplerate") or 48000)
 
             if self.mode == "passthrough":
                 if is_windows_loopback_device(in_dev):
@@ -192,11 +193,24 @@ class LineWorker:
 
         self._set(status="stopped", level=0.0)
 
+    @staticmethod
+    def _ensure_windows_com() -> None:
+        """SoundCard/WASAPI exige COM inicializado na thread atual."""
+        import sys
+
+        if sys.platform != "win32":
+            return
+        import ctypes
+
+        # COINIT_MULTITHREADED — workers daemon não usam STA de UI.
+        ctypes.windll.ole32.CoInitializeEx(None, 0x0)
+
     def _run_windows_loopback_passthrough(
         self, sd: Any, in_dev: int, out_dev: int | None
     ) -> None:
         from engine.audio.devices import get_windows_loopback_microphone
 
+        self._ensure_windows_com()
         mic = get_windows_loopback_microphone(in_dev)
         self._set(status="running")
         with mic.recorder(samplerate=self._sample_rate, blocksize=2048) as recorder:
@@ -228,9 +242,20 @@ class LineWorker:
         # problemas com captura mono. Fazemos o downmix depois da leitura.
         return arr.mean(axis=1).astype(np.float32, copy=False)
 
+    @staticmethod
+    def _resample(audio: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarray:
+        if src_rate == dst_rate or audio.size == 0:
+            return audio.astype(np.float32, copy=False)
+        duration = audio.shape[0] / float(src_rate)
+        new_len = max(1, int(round(duration * dst_rate)))
+        x_old = np.linspace(0.0, 1.0, num=audio.shape[0], endpoint=False)
+        x_new = np.linspace(0.0, 1.0, num=new_len, endpoint=False)
+        return np.interp(x_new, x_old, audio.astype(np.float64)).astype(np.float32)
+
     def _windows_loopback_capture(self, in_dev: int) -> None:
         from engine.audio.devices import get_windows_loopback_microphone
 
+        self._ensure_windows_com()
         mic = get_windows_loopback_microphone(in_dev)
         try:
             with mic.recorder(samplerate=self._sample_rate, blocksize=2048) as recorder:
@@ -377,7 +402,9 @@ class LineWorker:
                 continue
 
             try:
-                result = pipeline.process(segment, self._sample_rate)
+                # Whisper espera 16 kHz; a captura pode ser 44.1/48 kHz.
+                whisper_audio = self._resample(segment, self._sample_rate, 16000)
+                result = pipeline.process(whisper_audio, 16000)
             except TranslationError as exc:
                 self._set(error=str(exc), last_translation="")
                 continue

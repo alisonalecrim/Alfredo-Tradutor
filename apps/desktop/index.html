@@ -41,10 +41,14 @@
         <label class="field">
           <span>Modo</span>
           <select id="mode">
-            <option value="passthrough">Teste de áudio (passthrough)</option>
-            <option value="translate">Traduzir fala</option>
+            <option value="translate" selected>Traduzir fala (STT → tradução → TTS)</option>
+            <option value="passthrough">Só teste de áudio (eco do microfone, sem traduzir)</option>
           </select>
         </label>
+        <p class="pick-hint" id="mode-hint">
+          Use <strong>Traduzir fala</strong> para ver legendas e ouvir a voz sintetizada.
+          O modo de teste só ecoa o áudio (pode soar robótico) e não gera tradução.
+        </p>
         <label class="toggle advanced">
           <input type="checkbox" id="show-technical" />
           Mostrar dispositivos técnicos

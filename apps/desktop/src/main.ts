@@ -233,16 +233,34 @@ function lineStatusText(line: Record<string, unknown>, fallback: string): string
   if (warning) return `ATENÇÃO · ${warning}`;
 
   const status = String(line.status ?? fallback);
+  if (status === "loading_models") {
+    return "carregando Whisper (1ª vez pode demorar)…";
+  }
   const total = Number(line.latency_ms ?? 0);
   const stt = Number(line.stt_ms ?? 0);
   const tr = Number(line.translation_ms ?? 0);
   const tts = Number(line.tts_ms ?? 0);
   const dropped = Number(line.dropped_segments ?? 0);
+  const lastText = String(line.last_text ?? "").trim();
   if (total > 0) {
     const droppedText = dropped > 0 ? ` · perdas ${dropped}` : "";
-    return `${status} · ${total} ms (STT ${stt} / Trad ${tr} / TTS ${tts})${droppedText}`;
+    const heard = lastText ? ` · ouviu: ${lastText.slice(0, 40)}` : "";
+    return `${status} · ${total} ms (STT ${stt} / Trad ${tr} / TTS ${tts})${droppedText}${heard}`;
   }
   return status;
+}
+
+function updateModeHint() {
+  const mode = $<HTMLSelectElement>("mode").value;
+  const hint = $("mode-hint");
+  if (mode === "passthrough") {
+    hint.innerHTML =
+      "<strong>Modo teste:</strong> você ouve o eco do microfone (sem legendas e sem tradução). " +
+      "Para traduzir, escolha <em>Traduzir fala</em>.";
+  } else {
+    hint.innerHTML =
+      "Fale uma frase e pause ~0,5 s. As legendas aparecem abaixo; a voz sintetizada (Windows) sai na saída escolhida.";
+  }
 }
 
 function applyStatus(s: StatusResponse) {
@@ -282,8 +300,14 @@ function escapeHtml(s: string) {
 
 async function startSession() {
   showError(null);
+  const mode = $<HTMLSelectElement>("mode").value;
+  if (mode === "passthrough") {
+    showError(
+      "Modo teste ativo: eco sem tradução. Se quiser legendas e fala traduzida, mude para “Traduzir fala” e inicie de novo.",
+    );
+  }
   const body = {
-    mode: $<HTMLSelectElement>("mode").value,
+    mode,
     line_a: linePayload("a"),
     line_b: linePayload("b"),
   };
@@ -340,6 +364,8 @@ window.addEventListener("DOMContentLoaded", async () => {
   }
   $("btn-start").addEventListener("click", () => void startSession());
   $("btn-stop").addEventListener("click", () => void stopSession());
+  $("mode").addEventListener("change", () => updateModeHint());
+  updateModeHint();
 
   const ok = await checkHealth();
   if (ok) {
